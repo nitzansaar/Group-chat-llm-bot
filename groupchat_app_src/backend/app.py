@@ -5,7 +5,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPExcept
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from dotenv import load_dotenv
@@ -31,15 +31,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve frontend
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
-
 manager = ConnectionManager()
 
 # --------- Schemas ---------
 class AuthPayload(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=50)
+    # bcrypt accepts up to 72 bytes; enforce here for clear client error
+    password: str = Field(min_length=1, max_length=72)
 
 class MessagePayload(BaseModel):
     content: str
@@ -96,6 +94,9 @@ async def on_startup():
 
 @app.post("/api/signup")
 async def signup(payload: AuthPayload, session: AsyncSession = Depends(get_db)):
+    # Extra safety: enforce 72-byte limit for unicode passwords
+    if len(payload.password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
     # check unique username
     existing = await session.execute(select(User).where(User.username == payload.username))
     if existing.scalar_one_or_none():
@@ -160,3 +161,6 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"type": "ack", "echo": data})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# Serve frontend last so it doesn't shadow /api/* or /ws
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
